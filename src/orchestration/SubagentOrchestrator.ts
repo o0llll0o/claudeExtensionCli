@@ -156,13 +156,7 @@ export class SubagentOrchestrator extends EventEmitter {
         const workingPath = request.worktreePath || this.cwd;
 
         return new Promise((resolve) => {
-            const args = [
-                '--print',
-                '--output-format', 'stream-json',
-                '--model', config.model,
-                '--dangerously-skip-permissions'
-            ];
-
+            // Build the full prompt first
             let finalPrompt = request.prompt;
             if (config.ultrathink) {
                 finalPrompt = `ultrathink\n${finalPrompt}`;
@@ -170,6 +164,18 @@ export class SubagentOrchestrator extends EventEmitter {
             if (request.context) {
                 finalPrompt = `Context:\n${request.context}\n\nTask:\n${finalPrompt}`;
             }
+
+            // Combine system prompt with user prompt
+            const fullPrompt = config.systemPrompt + '\n\n' + finalPrompt;
+
+            // Pass prompt via -p flag (--print mode ignores stdin)
+            const args = [
+                '--print',
+                '--output-format', 'stream-json',
+                '--model', config.model,
+                '--dangerously-skip-permissions',
+                '-p', fullPrompt
+            ];
 
             const proc = spawn('claude', args, {
                 cwd: workingPath,
@@ -181,9 +187,6 @@ export class SubagentOrchestrator extends EventEmitter {
 
             let buffer = '';
             let lineBuffer = '';
-
-            proc.stdin?.write(config.systemPrompt + '\n\n' + finalPrompt);
-            proc.stdin?.end();
 
             proc.stdout?.on('data', (chunk: Buffer) => {
                 lineBuffer += chunk.toString();
