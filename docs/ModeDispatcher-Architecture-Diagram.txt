@@ -1,0 +1,445 @@
+# Mode Dispatcher System - Visual Architecture
+
+## System Overview
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│                            VS Code Extension UI                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐ │
+│  │ App.tsx                                                               │ │
+│  │  • currentMode: 'chat' | 'review' | 'plan' | 'brainstorm'            │ │
+│  │  • swarmDensity: 1-10                                                │ │
+│  │  • permissionMode: 'ask' | 'auto'                                    │ │
+│  │  • handleSend() → dispatcher.dispatch()                              │ │
+│  └────────────────────────┬─────────────────────────────────────────────┘ │
+└───────────────────────────┼───────────────────────────────────────────────┘
+                            │
+                            ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          ModeDispatcher                                    │
+│  ┌──────────────────────────────────────────────────────────────────────┐ │
+│  │ Registry: Map<AppMode, ModeHandler>                                  │ │
+│  │                                                                       │ │
+│  │ dispatch(mode, message, context, settings)                           │ │
+│  │   ├─ Get handler from registry                                       │ │
+│  │   ├─ Validate request                                                │ │
+│  │   ├─ Set timeout                                                     │ │
+│  │   ├─ Call handler.handle()                                           │ │
+│  │   ├─ Emit events (started, progress, completed)                      │ │
+│  │   └─ Return typed response                                           │ │
+│  │                                                                       │ │
+│  │ Fallback: If no handler → use defaultMode (chat)                     │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
+└───────────┬──────────────┬──────────────┬──────────────┬─────────────────┘
+            │              │              │              │
+            ▼              ▼              ▼              ▼
+  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+  │ChatMode      │ │ReviewMode    │ │PlanMode      │ │Brainstorm    │
+  │Handler       │ │Handler       │ │Handler       │ │Handler       │
+  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+
+
+## Handler Inheritance Hierarchy
+
+                    ┌──────────────────────┐
+                    │  ModeHandler         │
+                    │  (Interface)         │
+                    │                      │
+                    │  + mode: AppMode     │
+                    │  + canHandle()       │
+                    │  + handle()          │
+                    │  + stop()            │
+                    │  + validate()        │
+                    └──────────────────────┘
+                              ▲
+                              │
+                              │ implements
+                              │
+                    ┌──────────────────────┐
+                    │  BaseModeHandler     │
+                    │  (Abstract)          │
+                    │                      │
+                    │  + handle()          │
+                    │    ├─ validate()     │
+                    │    ├─ emit(started)  │
+                    │    ├─ executeHandler()│
+                    │    ├─ emit(completed)│
+                    │    └─ error handling │
+                    │                      │
+                    │  # executeHandler()  │
+                    │    (abstract)        │
+                    └──────────────────────┘
+                              ▲
+                              │
+          ┌───────────────────┼───────────────────┬──────────────┐
+          │                   │                   │              │
+          │                   │                   │              │
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ChatMode         │ │ReviewMode       │ │PlanMode         │ │Brainstorm       │
+│Handler          │ │Handler          │ │Handler          │ │Handler          │
+│                 │ │                 │ │                 │ │                 │
+│executeHandler() │ │executeHandler() │ │executeHandler() │ │executeHandler() │
+│  ├─ sendMessage │ │  ├─ buildContext│ │  ├─ runAgent    │ │  ├─ spawnAgents │
+│  └─ return      │ │  ├─ sendMessage │ │  │   (planner)  │ │  │   (parallel) │
+│     ChatResponse│ │  ├─ parseReview │ │  ├─ parsePlan   │ │  ├─ synthesize  │
+│                 │ │  └─ return      │ │  └─ return      │ │  └─ return      │
+│                 │ │     ReviewResp. │ │     PlanResp.   │ │     BrainstormR.│
+└─────────────────┘ └─────────────────┘ └─────────────────┘ └─────────────────┘
+
+
+## Data Flow - Chat Mode Example
+
+┌─────────┐
+│  User   │ "Explain async/await"
+└────┬────┘
+     │
+     ▼
+┌──────────────────┐
+│ App.tsx          │ handleSend()
+│ currentMode='chat'│
+└────┬─────────────┘
+     │ dispatcher.dispatch('chat', message, context, settings)
+     ▼
+┌──────────────────────────┐
+│ ModeDispatcher           │
+│  ├─ getHandler('chat')   │
+│  ├─ validate(request)    │
+│  └─ handler.handle()     │
+└────┬─────────────────────┘
+     │ ModeRequest { mode: 'chat', message, context, settings, requestId }
+     ▼
+┌──────────────────────────┐
+│ BaseModeHandler          │
+│  ├─ emit('mode:started') │ ─────┐
+│  ├─ executeHandler()     │      │
+│  └─ emit('mode:completed')│ ──┐ │
+└────┬─────────────────────┘   │ │
+     │                          │ │
+     ▼                          │ │
+┌──────────────────────────┐   │ │
+│ ChatModeHandler          │   │ │
+│  ├─ claudeService        │   │ │
+│  │   .sendMessage()      │   │ │
+│  └─ return ChatResponse  │   │ │
+└────┬─────────────────────┘   │ │
+     │ ChatModeResponse        │ │
+     ▼                          │ │
+┌──────────────────────────┐   │ │
+│ ModeDispatcher           │   │ │
+│  return response         │   │ │
+└────┬─────────────────────┘   │ │
+     │                          │ │
+     ▼                          ▼ ▼
+┌──────────────────────────┐ ┌──────────────────┐
+│ App.tsx                  │ │ Event Listeners  │
+│  handleModeResponse()    │ │  • Progress UI   │
+│   ├─ addMessage()        │ │  • Loading state │
+│   └─ updateUI()          │ │  • Error display │
+└──────────────────────────┘ └──────────────────┘
+
+
+## Data Flow - Brainstorm Mode Example
+
+┌─────────┐
+│  User   │ "Should we use microservices?"
+└────┬────┘
+     │
+     ▼
+┌──────────────────────────┐
+│ App.tsx                  │ handleSend()
+│ currentMode='brainstorm' │
+│ swarmDensity=5           │
+└────┬─────────────────────┘
+     │ dispatcher.dispatch('brainstorm', message, context, settings)
+     ▼
+┌──────────────────────────┐
+│ ModeDispatcher           │
+│  ├─ getHandler('brainstorm')
+│  ├─ validate(request)    │
+│  └─ handler.handle()     │
+└────┬─────────────────────┘
+     │ ModeRequest { mode: 'brainstorm', swarmDensity: 5, ... }
+     ▼
+┌──────────────────────────┐
+│ BrainstormModeHandler    │
+│  ├─ spawn 5 agents       │ ───┐
+│  │   (parallel)          │    │
+│  ├─ synthesize responses │    │
+│  └─ return response      │    │
+└────┬─────────────────────┘    │
+     │                           │
+     │                           ▼
+     │                    ┌──────────────────────────┐
+     │                    │ Promise.all([            │
+     │                    │   runAgent('Critical')   │
+     │                    │   runAgent('Creative')   │
+     │                    │   runAgent('Practical')  │
+     │                    │   runAgent('UserAdvocate')│
+     │                    │   runAgent('Performance')│
+     │                    │ ])                       │
+     │                    └──────────┬───────────────┘
+     │                               │
+     │                               ▼
+     │                    ┌──────────────────────────┐
+     │                    │ SubagentOrchestrator     │
+     │                    │  • Run each agent        │
+     │                    │  • Return perspectives   │
+     │                    └──────────┬───────────────┘
+     │                               │
+     │ ◄─────────────────────────────┘
+     │ agentResponses[]
+     ▼
+┌──────────────────────────┐
+│ ClaudeService            │
+│  synthesize(responses)   │
+│  • Find common themes    │
+│  • Identify divergences  │
+└────┬─────────────────────┘
+     │ synthesis
+     ▼
+┌──────────────────────────┐
+│ BrainstormModeResponse   │
+│  • synthesis             │
+│  • agentResponses[]      │
+│  • commonThemes[]        │
+│  • divergentIdeas[]      │
+└────┬─────────────────────┘
+     │
+     ▼
+┌──────────────────────────┐
+│ App.tsx                  │
+│  displayBrainstormPanel()│
+│   ├─ Show synthesis      │
+│   ├─ Show perspectives   │
+│   └─ Show themes         │
+└──────────────────────────┘
+
+
+## Event Flow
+
+┌──────────────────┐
+│  Dispatcher      │
+│   dispatch()     │
+└────┬─────────────┘
+     │
+     ├─────► Event: 'mode:started' ──────► UI: Show loading
+     │         { mode, requestId }
+     │
+     ▼
+┌──────────────────┐
+│  Handler         │
+│   handle()       │
+└────┬─────────────┘
+     │
+     ├─────► Event: 'mode:progress' ────► UI: Update progress
+     │         { message, progress: 30 }
+     │
+     ├─────► Event: 'mode:progress' ────► UI: Update progress
+     │         { message, progress: 70 }
+     │
+     ├─────► Event: 'mode:completed' ───► UI: Display result
+     │         { response }
+     │
+     └─────► Event: 'mode:error' ────────► UI: Show error
+               { error }                      (if error occurs)
+
+
+## Type Safety Flow
+
+┌─────────────────────────────────────────────────────────────┐
+│ dispatch(): Promise<ModeResponse>                           │
+│   ↓                                                          │
+│ ModeResponse = ChatModeResponse | ReviewModeResponse | ...  │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ if (response.mode === 'review' && response.success) {       │
+│   // TypeScript narrows type to ReviewModeResponse          │
+│   response.issues.forEach(issue => {                        │
+│     console.log(issue.severity); // 'error' | 'warning' ...│
+│   });                                                        │
+│ }                                                            │
+└─────────────────────────────────────────────────────────────┘
+
+
+## Component Dependencies
+
+┌─────────────────────────────────────────────────────────────┐
+│                     ModeDispatcher                          │
+│  No dependencies (pure orchestrator)                        │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                   BaseModeHandler                           │
+│  No dependencies (abstract base)                            │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│               ChatModeHandler                               │
+│  ├─ ClaudeService (sendMessage)                             │
+│  └─ No other dependencies                                   │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│              ReviewModeHandler                              │
+│  ├─ ClaudeService (sendMessage)                             │
+│  └─ No other dependencies                                   │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│               PlanModeHandler                               │
+│  ├─ SubagentOrchestrator (runAgent)                         │
+│  └─ No other dependencies                                   │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│            BrainstormModeHandler                            │
+│  ├─ SubagentOrchestrator (runAgent)                         │
+│  ├─ ClaudeService (sendMessage for synthesis)               │
+│  └─ No other dependencies                                   │
+└─────────────────────────────────────────────────────────────┘
+
+
+## State Machine - Request Lifecycle
+
+                ┌─────────────┐
+                │   CREATED   │ (createRequest)
+                └──────┬──────┘
+                       │
+                       ▼
+                ┌─────────────┐
+                │  VALIDATING │ (validate)
+                └──────┬──────┘
+                       │
+                ┌──────┴──────┐
+                │             │
+          [Valid]          [Invalid]
+                │             │
+                ▼             ▼
+         ┌─────────────┐  ┌─────────────┐
+         │  EXECUTING  │  │   FAILED    │
+         └──────┬──────┘  └─────────────┘
+                │
+       ┌────────┼────────┐
+       │        │        │
+   [Success] [Error] [Timeout]
+       │        │        │
+       ▼        ▼        ▼
+ ┌──────────┐ ┌─────────┐ ┌─────────┐
+ │COMPLETED │ │ FAILED  │ │ FAILED  │
+ └──────────┘ └─────────┘ └─────────┘
+
+
+## Error Handling Strategy
+
+Request Error:
+  ├─ Validation Error → Return error response immediately
+  ├─ Timeout Error → Cancel handler, return timeout error
+  ├─ Handler Error → Catch, wrap in error response
+  └─ Network Error → Propagate to handler, return error response
+
+All errors result in:
+  {
+    success: false,
+    mode: <mode>,
+    requestId: <id>,
+    processingTime: <ms>,
+    error: <message>
+  }
+
+
+## Performance Characteristics
+
+Chat Mode:
+  ├─ Overhead: ~5ms (validation + routing)
+  └─ Total: ClaudeService time + 5ms
+
+Review Mode:
+  ├─ Overhead: ~15ms (parsing + structuring)
+  └─ Total: ClaudeService time + 15ms
+
+Plan Mode:
+  ├─ Overhead: ~10ms (plan parsing)
+  └─ Total: SubagentOrchestrator time + 10ms
+
+Brainstorm Mode:
+  ├─ Overhead: ~20ms (synthesis)
+  ├─ Agents: Parallel execution (not sequential)
+  └─ Total: max(agent_time) + synthesis_time + 20ms
+
+Memory:
+  ├─ Dispatcher: ~2KB
+  ├─ Handlers (4): ~3KB
+  └─ Total: ~5KB overhead
+
+
+## Scalability Considerations
+
+Horizontal (More Handlers):
+  ✓ Registry pattern supports unlimited handlers
+  ✓ No coupling between handlers
+  ✓ Each handler is independent module
+
+Vertical (More Requests):
+  ✓ Stateless handlers (no shared state)
+  ✓ Promise-based concurrency
+  ✓ Timeout protection prevents resource leaks
+  ✓ Event listeners are lightweight
+
+Agent Scaling:
+  ✓ Brainstorm mode: 2-8 agents configurable
+  ✓ Parallel execution via Promise.all
+  ✓ Can add agent pooling if needed
+
+
+## Testing Architecture
+
+Unit Tests:
+  ├─ ModeDispatcher (registry, routing, validation)
+  ├─ BaseModeHandler (lifecycle, events, timing)
+  ├─ ChatModeHandler (with mock ClaudeService)
+  ├─ ReviewModeHandler (with mock ClaudeService)
+  ├─ PlanModeHandler (with mock SubagentOrchestrator)
+  └─ BrainstormModeHandler (with both mocks)
+
+Integration Tests:
+  ├─ Dispatcher + Real Handlers
+  ├─ Event emission and listener callbacks
+  ├─ Error propagation and recovery
+  └─ Timeout and cancellation
+
+E2E Tests:
+  ├─ Full flow with real services
+  ├─ UI updates and state changes
+  └─ User interaction scenarios
+
+
+## Deployment Strategy
+
+Phase 1: Feature Flag
+  ├─ Deploy with modeDispatcherEnabled = false
+  ├─ Enable for internal testing
+  └─ Monitor metrics and logs
+
+Phase 2: Gradual Rollout
+  ├─ Enable for 10% of users
+  ├─ Monitor error rates and performance
+  ├─ Increase to 50% if stable
+  └─ Full rollout at 100%
+
+Phase 3: Legacy Cleanup
+  ├─ Remove old handleSend logic
+  ├─ Clean up unused code
+  └─ Update documentation
+
+---
+
+This architecture diagram shows:
+- System overview with component relationships
+- Handler inheritance hierarchy
+- Data flow for different modes
+- Event-driven communication
+- Type safety mechanisms
+- Dependencies and state machines
+- Performance characteristics
+- Testing and deployment strategy

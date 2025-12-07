@@ -1,0 +1,141 @@
+{
+  "name": "claude-cli-assistant",
+  "displayName": "Claude Assistant",
+  "description": "Autonomous AI coding agent platform powered by Claude CLI - Level 4 Agent Orchestration",
+  "version": "0.2.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-assistant",
+          "title": "Claude Assistant",
+          "icon": "$(sparkle)"
+        }
+      ]
+    },
+    "views": {
+      "claude-assistant": [
+        {
+          "type": "webview",
+          "id": "claudeAssistant.chatView",
+          "name": "Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeAssistant.openChat",
+        "title": "Claude: Open Agent Panel"
+      },
+      {
+        "command": "claudeAssistant.stopGeneration",
+        "title": "Claude: Stop Generation"
+      },
+      {
+        "command": "claudeAssistant.startTask",
+        "title": "Claude: Start Autonomous Task"
+      },
+      {
+        "command": "claudeAssistant.showPlan",
+        "title": "Claude: Show Execution Plan"
+      },
+      {
+        "command": "claudeAssistant.indexWorkspace",
+        "title": "Claude: Index Workspace"
+      },
+      {
+        "command": "claudeAssistant.cleanupWorktrees",
+        "title": "Claude: Cleanup Worktrees"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Assistant",
+      "properties": {
+        "claudeAssistant.defaultModel": {
+          "type": "string",
+          "default": "claude-opus-4-5",
+          "enum": [
+            "claude-opus-4-5",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5"
+          ],
+          "description": "Default Claude model to use"
+        },
+        "claudeAssistant.ultrathinkDefault": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Ultrathink mode by default"
+        },
+        "claudeAssistant.autoIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically index workspace on startup"
+        },
+        "claudeAssistant.swarmDensity": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Number of sub-agents to simulate in Brainstorm mode (1-12)"
+        },
+        "claudeAssistant.executionPermission": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "manual",
+            "auto",
+            "skip"
+          ],
+          "enumDescriptions": [
+            "Manual: Approve every CLI command",
+            "Auto: Auto-approve reads, pause for writes",
+            "Skip (YOLO): Fully autonomous execution"
+          ],
+          "description": "Permission mode for CLI command execution"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "npm run compile:extension && npm run compile:webview",
+    "compile:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "compile:webview": "esbuild src/webview/index.tsx --bundle --outfile=dist/webview.js --format=iife --loader:.tsx=tsx --loader:.ts=ts",
+    "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
+    "watch:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "watch:webview": "esbuild src/webview/index.tsx --bundle --outfile=dist/webview.js --format=iife --loader:.tsx=tsx --loader:.ts=ts --watch"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "@types/vscode": "^1.85.0",
+    "@vscode/webview-ui-toolkit": "^1.4.0",
+    "concurrently": "^8.2.2",
+    "esbuild": "^0.19.10",
+    "highlight.js": "^11.11.1",
+    "jest": "^30.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "strip-ansi": "^7.1.0",
+    "tree-kill": "^1.2.2"
+  }
+}
