@@ -1,0 +1,20 @@
+{
+  "name": "performance-benchmarks",
+  "version": "1.0.0",
+  "description": "Performance benchmarks for autonomous agent startup components",
+  "scripts": {
+    "bench:all": "node run-all-benchmarks.js",
+    "bench:retry": "node retry-loop.benchmark.js",
+    "bench:tools": "node tool-event-handler.benchmark.js",
+    "bench:debate": "node debate-coordinator.benchmark.js",
+    "bench:ui": "node ui-rendering.benchmark.js",
+    "bench:gc": "node --expose-gc run-all-benchmarks.js"
+  },
+  "keywords": [
+    "benchmark",
+    "performance",
+    "testing"
+  ],
+  "author": "qa-5",
+  "license": "MIT"
+}

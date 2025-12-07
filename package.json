@@ -114,7 +114,13 @@
     "compile:webview": "esbuild src/webview/index.tsx --bundle --outfile=dist/webview.js --format=iife --loader:.tsx=tsx --loader:.ts=ts",
     "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
     "watch:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
-    "watch:webview": "esbuild src/webview/index.tsx --bundle --outfile=dist/webview.js --format=iife --loader:.tsx=tsx --loader:.ts=ts --watch"
+    "watch:webview": "esbuild src/webview/index.tsx --bundle --outfile=dist/webview.js --format=iife --loader:.tsx=tsx --loader:.ts=ts --watch",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:watch": "jest --watch",
+    "lint": "eslint src --ext ts,tsx",
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky install || echo 'Husky not installed'"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

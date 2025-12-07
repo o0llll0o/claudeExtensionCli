@@ -200,12 +200,15 @@ interface SwarmState {
 
 interface ThoughtStep {
     id: string;
-    type: 'tool' | 'thinking' | 'execution';
+    type: 'tool' | 'thinking' | 'execution' | 'retry' | 'retry_success' | 'retry_failed';
     toolName?: string;
     toolInput?: Record<string, unknown>;
     output?: string;
     timestamp: number;
     status: 'pending' | 'running' | 'done' | 'error';
+    retryAttempt?: number;
+    maxRetries?: number;
+    retryError?: string;
 }
 
 interface Attachment {
@@ -214,6 +217,41 @@ interface Attachment {
     mimeType: string;
     data: string;
     size: number;
+}
+
+interface RetryState {
+    taskId: string;
+    attempt: number;
+    maxAttempts: number;
+    error: string;
+    nextRetryAt?: number;
+    status?: 'retrying' | 'exhausted';
+}
+
+interface ToolExecution {
+    id: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    output?: string;
+    error?: string;
+    status: 'running' | 'completed' | 'error';
+    startTime: number;
+    endTime?: number;
+}
+
+interface DebateArgument {
+    agentId: string;
+    position: string;
+    reasoning: string;
+    timestamp: number;
+}
+
+interface DebateState {
+    topic: string;
+    participants: string[];
+    arguments: DebateArgument[];
+    consensus?: string;
+    status: 'active' | 'concluded';
 }
 
 // ============================================
@@ -1211,6 +1249,174 @@ function AttachmentPreview({
 }
 
 // ============================================
+// RETRY, TOOL, AND DEBATE COMPONENTS
+// ============================================
+
+function RetryIndicator({ retryState }: { retryState: RetryState }) {
+    const timeUntilRetry = retryState.nextRetryAt ? Math.max(0, retryState.nextRetryAt - Date.now()) : 0;
+    const isExhausted = retryState.status === 'exhausted';
+
+    return (
+        <div style={{
+            ...styles.planCard,
+            backgroundColor: isExhausted ? 'rgba(239, 68, 68, 0.1)' : 'rgba(251, 191, 36, 0.1)',
+            borderLeft: `3px solid ${isExhausted ? '#ef4444' : '#fbbf24'}`,
+            marginBottom: '16px'
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+                <span style={{ fontSize: '20px' }}>{isExhausted ? '⚠️' : '🔄'}</span>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, color: 'var(--vscode-foreground)' }}>
+                        {isExhausted ? 'Retry Exhausted' : `Retrying (${retryState.attempt}/${retryState.maxAttempts})`}
+                    </div>
+                    <div style={{ fontSize: '13px', color: 'var(--vscode-descriptionForeground)', marginTop: '4px' }}>
+                        Task ID: {retryState.taskId}
+                    </div>
+                </div>
+            </div>
+            <div style={{
+                fontSize: '13px',
+                color: 'var(--vscode-descriptionForeground)',
+                backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                padding: '8px',
+                borderRadius: '4px',
+                fontFamily: 'var(--vscode-editor-font-family)',
+                marginTop: '8px'
+            }}>
+                Error: {retryState.error}
+            </div>
+            {!isExhausted && timeUntilRetry > 0 && (
+                <div style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginTop: '8px' }}>
+                    Next retry in {Math.ceil(timeUntilRetry / 1000)}s
+                </div>
+            )}
+        </div>
+    );
+}
+
+function ToolExecutionFeedback({ tool }: { tool: ToolExecution }) {
+    const duration = tool.endTime ? tool.endTime - tool.startTime : Date.now() - tool.startTime;
+    const statusColor = tool.status === 'completed' ? '#10b981' : tool.status === 'error' ? '#ef4444' : '#fbbf24';
+    const statusIcon = tool.status === 'completed' ? '✓' : tool.status === 'error' ? '✗' : '⋯';
+
+    return (
+        <div style={{
+            ...styles.toolCall,
+            borderLeft: `3px solid ${statusColor}`,
+            marginBottom: '8px'
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '16px' }}>{statusIcon}</span>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, color: 'var(--vscode-foreground)' }}>
+                        {tool.toolName}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)' }}>
+                        {tool.status} • {(duration / 1000).toFixed(2)}s
+                    </div>
+                </div>
+            </div>
+            {tool.output && (
+                <pre style={{
+                    ...styles.toolInput,
+                    maxHeight: '100px',
+                    overflow: 'auto',
+                    marginTop: '8px'
+                }}>
+                    {typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}
+                </pre>
+            )}
+            {tool.error && (
+                <div style={{
+                    fontSize: '13px',
+                    color: '#ef4444',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    padding: '8px',
+                    borderRadius: '4px',
+                    marginTop: '8px'
+                }}>
+                    {tool.error}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function DebateVisualization({ debate }: { debate: DebateState }) {
+    return (
+        <div style={{
+            ...styles.planCard,
+            backgroundColor: 'rgba(139, 92, 246, 0.1)',
+            borderLeft: '3px solid #8b5cf6',
+            marginBottom: '16px'
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                <span style={{ fontSize: '20px' }}>💬</span>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, color: 'var(--vscode-foreground)' }}>
+                        Agent Debate: {debate.topic}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginTop: '4px' }}>
+                        {debate.participants.join(', ')} • {debate.status}
+                    </div>
+                </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {debate.arguments.map((arg, idx) => (
+                    <div key={idx} style={{
+                        backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                        padding: '12px',
+                        borderRadius: '6px',
+                        borderLeft: '2px solid #8b5cf6'
+                    }}>
+                        <div style={{
+                            fontWeight: 600,
+                            color: 'var(--vscode-foreground)',
+                            marginBottom: '4px',
+                            fontSize: '13px'
+                        }}>
+                            {arg.agentId}
+                        </div>
+                        <div style={{
+                            fontSize: '13px',
+                            color: 'var(--vscode-foreground)',
+                            marginBottom: '6px'
+                        }}>
+                            Position: {arg.position}
+                        </div>
+                        <div style={{
+                            fontSize: '12px',
+                            color: 'var(--vscode-descriptionForeground)',
+                            fontStyle: 'italic'
+                        }}>
+                            {arg.reasoning}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            {debate.consensus && (
+                <div style={{
+                    marginTop: '12px',
+                    padding: '12px',
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    borderRadius: '6px',
+                    borderLeft: '3px solid #10b981'
+                }}>
+                    <div style={{ fontWeight: 600, color: '#10b981', marginBottom: '4px' }}>
+                        Consensus Reached
+                    </div>
+                    <div style={{ fontSize: '13px', color: 'var(--vscode-foreground)' }}>
+                        {debate.consensus}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ============================================
 // MAIN APP COMPONENT
 // ============================================
 
@@ -1264,6 +1470,11 @@ export function App() {
     const [isInitializing, setIsInitializing] = useState(true);
     const [initProgress, setInitProgress] = useState(0);
     const [currentSessionId, setCurrentSessionId] = useState<string>(`session-${Date.now()}`);
+
+    // Retry, Tool, and Debate states
+    const [retryState, setRetryState] = useState<RetryState | null>(null);
+    const [toolExecutions, setToolExecutions] = useState<Map<string, ToolExecution>>(new Map());
+    const [activeDebate, setActiveDebate] = useState<DebateState | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const streamingRef = useRef('');
@@ -1363,6 +1574,8 @@ export function App() {
                     executionStatus: 'draft',
                     currentStepIndex: 0
                 });
+                setIsGenerating(false);
+                setStreamingContent('');
             } else if (message.type === 'step_update') {
                 setPlanState(prev => ({
                     ...prev,
@@ -1460,6 +1673,97 @@ export function App() {
                 // For coder/verifier in plan execution
                 if (role === 'coder' || role === 'verifier') {
                     setStreamingContent(prev => prev + content);
+                }
+            } else if (message.type === 'retry_update') {
+                // Update retry state with current attempt
+                setRetryState({
+                    taskId: message.taskId,
+                    attempt: message.attempt,
+                    maxAttempts: message.maxAttempts,
+                    error: message.error,
+                    nextRetryAt: message.nextRetryAt,
+                    status: 'retrying'
+                });
+            } else if (message.type === 'retry_success') {
+                // Clear retry state and show success message
+                setRetryState(null);
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: `✓ Task succeeded after ${message.attempt} attempt(s)`
+                }]);
+            } else if (message.type === 'retry_exhausted') {
+                // Update retry state to show exhausted status
+                if (retryState) {
+                    setRetryState({
+                        ...retryState,
+                        status: 'exhausted'
+                    });
+                }
+            } else if (message.type === 'tool_start') {
+                // Add new tool execution
+                const toolExec: ToolExecution = {
+                    id: message.toolId || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                    toolName: message.toolName,
+                    input: message.input || {},
+                    status: 'running',
+                    startTime: Date.now()
+                };
+                setToolExecutions(prev => new Map(prev).set(toolExec.id, toolExec));
+            } else if (message.type === 'tool_complete') {
+                // Update tool execution with output
+                setToolExecutions(prev => {
+                    const newMap = new Map(prev);
+                    const tool = newMap.get(message.toolId);
+                    if (tool) {
+                        newMap.set(message.toolId, {
+                            ...tool,
+                            output: message.output,
+                            status: 'completed',
+                            endTime: Date.now()
+                        });
+                    }
+                    return newMap;
+                });
+            } else if (message.type === 'tool_error') {
+                // Update tool execution with error
+                setToolExecutions(prev => {
+                    const newMap = new Map(prev);
+                    const tool = newMap.get(message.toolId);
+                    if (tool) {
+                        newMap.set(message.toolId, {
+                            ...tool,
+                            error: message.error,
+                            status: 'error',
+                            endTime: Date.now()
+                        });
+                    }
+                    return newMap;
+                });
+            } else if (message.type === 'debate_update') {
+                // Update active debate state
+                if (message.action === 'start') {
+                    setActiveDebate({
+                        topic: message.topic,
+                        participants: message.participants || [],
+                        arguments: [],
+                        status: 'active'
+                    });
+                } else if (message.action === 'argument' && activeDebate) {
+                    setActiveDebate({
+                        ...activeDebate,
+                        arguments: [...activeDebate.arguments, {
+                            agentId: message.agentId,
+                            position: message.position,
+                            reasoning: message.reasoning,
+                            timestamp: Date.now()
+                        }]
+                    });
+                } else if (message.action === 'conclude' && activeDebate) {
+                    setActiveDebate({
+                        ...activeDebate,
+                        consensus: message.consensus,
+                        status: 'concluded'
+                    });
                 }
             }
         };
@@ -1742,6 +2046,18 @@ export function App() {
                                 )}
                             </div>
                         )}
+
+                        {/* Retry Indicator */}
+                        {retryState && <RetryIndicator retryState={retryState} />}
+
+                        {/* Tool Execution Feedback */}
+                        {Array.from(toolExecutions.values()).map(tool => (
+                            <ToolExecutionFeedback key={tool.id} tool={tool} />
+                        ))}
+
+                        {/* Debate Visualization */}
+                        {activeDebate && <DebateVisualization debate={activeDebate} />}
+
                         <div ref={messagesEndRef} />
                     </div>
                 )}
@@ -1789,7 +2105,29 @@ export function App() {
 
                 {/* Mode Selector Row */}
                 <div style={styles.modeSelectorRow}>
-                    <ModeSelector mode={currentMode} onChange={setCurrentMode} />
+                    <ModeSelector mode={currentMode} onChange={(newMode) => {
+                        // Clear shared state when switching modes to prevent leakage
+                        setCurrentMode(newMode);
+                        setInput('');
+                        setStreamingContent('');
+                        setActiveTools([]);
+                        setThoughtSteps([]);
+                        streamingRef.current = '';
+                        toolsRef.current = [];
+                        thoughtStepsRef.current = [];
+                        // Reset mode-specific states
+                        if (newMode !== 'plan') {
+                            setPlanState({ currentPlan: null, steps: [], executionStatus: 'idle', currentStepIndex: 0 });
+                        }
+                        if (newMode !== 'brainstorm') {
+                            setSwarmState({ agents: [], topology: 'mesh', progress: { totalAgents: 0, activeAgents: 0, completedAgents: 0, overallProgress: 0 }, agentOutputs: new Map() });
+                        }
+                        // Stop any in-flight generation
+                        if (isGenerating) {
+                            vscode.postMessage({ type: 'stop' });
+                            setIsGenerating(false);
+                        }
+                    }} />
                 </div>
 
                 <div style={styles.inputCard}>

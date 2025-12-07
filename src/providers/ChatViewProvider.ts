@@ -21,7 +21,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private sessionManager: SessionManager;
     private workspaceFolder: string;
     private cliInitialized: boolean = false;
-    private orchestrator: SubagentOrchestrator;
+    private orchestrator!: SubagentOrchestrator;
     
     constructor(
         private readonly extensionUri: vscode.Uri,
@@ -87,7 +87,69 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 type: 'step_update',
                 taskId: data.taskId,
                 stepId: data.step.id,
-                status: data.step.status
+                status: data.step.status,
+                stepIndex: data.step.id - 1
+            });
+        });
+
+        // Listen for retry events
+        this.orchestrator.on('retry_attempt', (data: { taskId: string; attempt: number; maxAttempts: number; error: string; nextRetryIn: number }) => {
+            this.postMessage({
+                type: 'retry_update',
+                taskId: data.taskId,
+                attempt: data.attempt,
+                maxAttempts: data.maxAttempts,
+                error: data.error,
+                nextRetryIn: data.nextRetryIn
+            });
+        });
+
+        this.orchestrator.on('retry_success', (data: { taskId: string; attempt: number; maxAttempts: number }) => {
+            this.postMessage({
+                type: 'retry_success',
+                taskId: data.taskId,
+                attempt: data.attempt,
+                maxAttempts: data.maxAttempts
+            });
+        });
+
+        this.orchestrator.on('retry_exhausted', (data: { taskId: string; attempt: number; maxAttempts: number; error: string }) => {
+            this.postMessage({
+                type: 'retry_exhausted',
+                taskId: data.taskId,
+                attempt: data.attempt,
+                maxAttempts: data.maxAttempts,
+                error: data.error
+            });
+        });
+
+        // Listen for tool events
+        this.orchestrator.on('tool_invoked', (data: { toolId: string; toolName: string; input?: any }) => {
+            this.postMessage({
+                type: 'tool_start',
+                toolId: data.toolId,
+                toolName: data.toolName,
+                input: data.input
+            });
+        });
+
+        this.orchestrator.on('tool_completed', (data: { toolId: string; toolName: string; output?: any; duration?: number }) => {
+            this.postMessage({
+                type: 'tool_complete',
+                toolId: data.toolId,
+                toolName: data.toolName,
+                output: data.output,
+                duration: data.duration
+            });
+        });
+
+        this.orchestrator.on('tool_error', (data: { toolId: string; toolName: string; error: string; duration?: number }) => {
+            this.postMessage({
+                type: 'tool_error',
+                toolId: data.toolId,
+                toolName: data.toolName,
+                error: data.error,
+                duration: data.duration
             });
         });
 
@@ -316,16 +378,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async handleChatMode(text: string, context: string, options: any) {
-        // Current behavior - direct to ClaudeService
-        const fullPrompt = context ? `${context}\n\n${text}` : text;
-        await this.claudeService.sendMessage(fullPrompt, {
-            model: options.model,
-            ultrathink: options.ultrathink
-        });
+        try {
+            const fullPrompt = context ? `${context}\n\n${text}` : text;
+            await this.claudeService.sendMessage(fullPrompt, {
+                model: options.model,
+                ultrathink: options.ultrathink
+            });
+        } catch (error) {
+            this.postMessage({
+                type: 'claude',
+                payload: { type: 'error', content: `Chat failed: ${error}` }
+            });
+        }
     }
 
     private async handleReviewMode(text: string, context: string, options: any) {
-        const reviewPrompt = `You are performing a code review. Analyze the following code and provide:
+        try {
+            const reviewPrompt = `You are performing a code review. Analyze the following code and provide:
 1. Summary of what the code does
 2. Potential bugs or issues
 3. Security concerns
@@ -334,10 +403,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 ${context ? `Code context:\n${context}\n\n` : ''}User request: ${text}`;
 
-        await this.claudeService.sendMessage(reviewPrompt, {
-            model: options.model,
-            ultrathink: options.ultrathink
-        });
+            await this.claudeService.sendMessage(reviewPrompt, {
+                model: options.model,
+                ultrathink: options.ultrathink
+            });
+        } catch (error) {
+            this.postMessage({
+                type: 'claude',
+                payload: { type: 'error', content: `Review failed: ${error}` }
+            });
+        }
     }
 
     private async handlePlanMode(text: string, context: string, options: any) {
@@ -352,15 +427,38 @@ ${context ? `Code context:\n${context}\n\n` : ''}User request: ${text}`;
                 context
             });
 
-            if (response.plan) {
-                this.currentPlan = response.plan;  // Store plan for later execution
+            // Check for explicit failure
+            if (!response.success) {
+                this.postMessage({
+                    type: 'claude',
+                    payload: { type: 'error', content: response.error || 'Plan generation failed' }
+                });
+                return;
+            }
+
+            // If we have a structured plan, use it
+            if (response.plan && response.plan.steps && response.plan.steps.length > 0) {
+                this.currentPlan = response.plan;
                 this.postMessage({
                     type: 'plan_ready',
                     plan: response.plan,
                     steps: response.plan.steps
                 });
+            } else if (response.content && response.content.trim()) {
+                // No structured plan but we have content - show it as a regular response
+                // This handles cases where Claude outputs markdown instead of JSON
+                this.postMessage({
+                    type: 'claude',
+                    payload: { type: 'done', content: `## Plan\n\n${response.content}` }
+                });
+            } else {
+                this.postMessage({
+                    type: 'claude',
+                    payload: { type: 'error', content: 'Plan generation failed: No content was produced' }
+                });
             }
         } catch (error) {
+            // Handle truly synchronous errors (like spawn throwing)
             this.postMessage({
                 type: 'claude',
                 payload: { type: 'error', content: `Plan generation failed: ${error}` }
@@ -369,56 +467,71 @@ ${context ? `Code context:\n${context}\n\n` : ''}User request: ${text}`;
     }
 
     private async handleSwarmMode(text: string, context: string, options: any) {
-        const agentCount = options.swarmDensity;
-        const taskId = `swarm-${Date.now()}`;
+        try {
+            const agentCount = options.swarmDensity;
+            const taskId = `swarm-${Date.now()}`;
 
-        // Initialize swarm in UI
-        this.postMessage({
-            type: 'swarm_init',
-            taskId,
-            agentCount,
-            topology: 'mesh'
-        });
-
-        // Spawn multiple agents
-        const agentPromises = [];
-        for (let i = 0; i < agentCount; i++) {
-            const agentId = `agent-${i}`;
+            // Initialize swarm in UI
             this.postMessage({
-                type: 'agent_update',
-                agentId,
-                status: 'working',
-                progress: 0
+                type: 'swarm_init',
+                taskId,
+                agentCount,
+                topology: 'mesh'
             });
 
-            agentPromises.push(
-                this.orchestrator.runAgent({
-                    taskId: `${taskId}-${agentId}`,
-                    role: 'coder',
-                    prompt: `As agent ${i+1} of ${agentCount}, analyze: ${text}`,
-                    context
-                }).then(response => {
-                    this.postMessage({
-                        type: 'agent_update',
-                        agentId,
-                        status: 'completed',
-                        progress: 100,
-                        output: response.content
-                    });
-                    return response;
-                })
-            );
+            // Spawn multiple agents
+            const agentPromises = [];
+            for (let i = 0; i < agentCount; i++) {
+                const agentId = `agent-${i}`;
+                this.postMessage({
+                    type: 'agent_update',
+                    agentId,
+                    status: 'working',
+                    progress: 0
+                });
+
+                agentPromises.push(
+                    this.orchestrator.runAgent({
+                        taskId: `${taskId}-${agentId}`,
+                        role: 'coder',
+                        prompt: `As agent ${i+1} of ${agentCount}, analyze: ${text}`,
+                        context
+                    }).then(response => {
+                        this.postMessage({
+                            type: 'agent_update',
+                            agentId,
+                            status: response.success ? 'completed' : 'failed',
+                            progress: 100,
+                            output: response.content
+                        });
+                        return response;
+                    }).catch(err => {
+                        this.postMessage({
+                            type: 'agent_update',
+                            agentId,
+                            status: 'failed',
+                            progress: 100
+                        });
+                        return { content: `Agent ${agentId} failed: ${err}`, success: false };
+                    })
+                );
+            }
+
+            // Wait for all agents
+            const results = await Promise.all(agentPromises);
+
+            // Aggregate results
+            const aggregated = results.map(r => r.content).join('\n\n---\n\n');
+            this.postMessage({
+                type: 'claude',
+                payload: { type: 'done', content: `## Swarm Results (${agentCount} agents)\n\n${aggregated}` }
+            });
+        } catch (error) {
+            this.postMessage({
+                type: 'claude',
+                payload: { type: 'error', content: `Swarm failed: ${error}` }
+            });
         }
-
-        // Wait for all agents
-        const results = await Promise.all(agentPromises);
-
-        // Aggregate results
-        const aggregated = results.map(r => r.content).join('\n\n---\n\n');
-        this.postMessage({
-            type: 'claude',
-            payload: { type: 'done', content: `## Swarm Results (${agentCount} agents)\n\n${aggregated}` }
-        });
     }
 
     // Plan mode handlers
@@ -431,16 +544,6 @@ ${context ? `Code context:\n${context}\n\n` : ''}User request: ${text}`;
         }
 
         try {
-            // Listen for step updates
-            this.orchestrator.on('step', (data: any) => {
-                this.postMessage({
-                    type: 'step_update',
-                    stepId: data.step.id,
-                    status: data.step.status,
-                    stepIndex: data.step.id - 1
-                });
-            });
-
             // Execute the plan in main workspace (no GitWorktree)
             const results = await this.orchestrator.executePlan(this.currentPlan, this.workspaceFolder);
 

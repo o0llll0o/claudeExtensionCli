@@ -16,7 +16,8 @@ describe('SubagentOrchestrator - Chunk Emission', () => {
         // Create mock stdin
         mockStdin = {
             write: jest.fn(),
-            end: jest.fn()
+            end: jest.fn(),
+            on: jest.fn()
         };
 
         // Create mock stdout and stderr as EventEmitters

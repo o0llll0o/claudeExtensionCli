@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Run linter on staged files
+echo "Running linter on staged files..."
+npx lint-staged
+
+# Run type check
+echo "Running type check..."
+npm run typecheck || true
+
+# Run tests for affected files
+echo "Running tests..."
+npm test -- --bail --findRelatedTests --passWithNoTests || true

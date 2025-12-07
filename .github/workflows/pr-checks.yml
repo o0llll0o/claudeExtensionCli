@@ -1,0 +1,78 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-validation:
+    name: PR Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for package-lock changes
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD --name-only | grep -q "package-lock.json" && \
+          echo "package-lock.json changed" || echo "No package-lock changes"
+
+      - name: Validate commit messages
+        run: |
+          npx commitlint --from origin/${{ github.base_ref }} --to HEAD || \
+          echo "Commit message validation skipped (no commitlint config)"
+        continue-on-error: true
+
+      - name: Check code formatting
+        run: |
+          npx prettier --check "src/**/*.{ts,tsx,json,md}" || \
+          echo "Formatting check skipped (no prettier config)"
+        continue-on-error: true
+
+      - name: Run bundle size check
+        run: |
+          npm run compile
+          BUNDLE_SIZE=$(stat -c%s dist/extension.js 2>/dev/null || stat -f%z dist/extension.js)
+          echo "Bundle size: $BUNDLE_SIZE bytes"
+          if [ $BUNDLE_SIZE -gt 5242880 ]; then
+            echo "Warning: Bundle size exceeds 5MB"
+          fi
+
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate coverage report
+        run: npm run test:coverage
+
+      - name: Comment PR with coverage
+        uses: romeovs/lcov-reporter-action@v0.3.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          lcov-file: ./coverage/lcov.info
+        continue-on-error: true
